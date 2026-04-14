@@ -1,5 +1,7 @@
 "use client";
 
+import { useState, useEffect } from "react";
+
 interface LandingScreenProps {
   onStart: () => void;
   loading: boolean;
@@ -7,11 +9,14 @@ interface LandingScreenProps {
 }
 
 export default function LandingScreen({ onStart, loading, error }: LandingScreenProps) {
-  const today = new Date().toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  });
+  const [today, setToday] = useState("");
+  useEffect(() => {
+    setToday(new Date().toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    }));
+  }, []);
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] flex flex-col items-center justify-center px-6">
