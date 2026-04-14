@@ -50,11 +50,12 @@ export async function POST() {
     if (isConcurrentLimit) {
       await endAllActiveConversations();
       res = await createConversation(context, greeting);
-    }
-
-    if (!res.ok) {
-      const err = await res.text();
-      return NextResponse.json({ error: err }, { status: res.status });
+      if (!res.ok) {
+        const err = await res.text();
+        return NextResponse.json({ error: err }, { status: res.status });
+      }
+    } else {
+      return NextResponse.json({ error: body }, { status: res.status });
     }
   }
 
