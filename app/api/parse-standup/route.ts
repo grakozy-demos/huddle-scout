@@ -18,6 +18,8 @@ interface Standup {
 }
 
 async function ollamaGenerate(prompt: string): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
   const res = await fetch("http://localhost:11434/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -27,7 +29,9 @@ async function ollamaGenerate(prompt: string): Promise<string> {
       stream: false,
       options: { temperature: 0.4, num_predict: 800 },
     }),
+    signal: controller.signal,
   });
+  clearTimeout(timeout);
   if (!res.ok) throw new Error("Ollama unavailable");
   const data = await res.json();
   return data.response?.trim() ?? "";
