@@ -1,65 +1,178 @@
-import Image from "next/image";
+"use client";
+
+import { useState, useCallback, useEffect, useRef } from "react";
+import LandingScreen from "@/components/LandingScreen";
+import HairCheckScreen from "@/components/HairCheckScreen";
+import ActiveSession, { Utterance } from "@/components/ActiveSession";
+import EndScreen from "@/components/EndScreen";
+import { parseCalendarEvents, CalendarEvent } from "@/lib/parseCalendar";
+import { deriveFromContext } from "@/lib/deriveFromContext";
+
+type Screen = "landing" | "haircheck" | "active" | "parsing" | "end";
+
+interface SessionData {
+  conversationId: string;
+  conversationUrl: string;
+  calendarEvents: CalendarEvent[];
+  context: string;
+}
+
+interface ParsedResult {
+  brief: {
+    priorities: string[];
+    flags: string[];
+  };
+  standup: {
+    yesterday: string;
+    today: string;
+    blockers: string;
+  };
+}
 
 export default function Home() {
-  return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+  const [screen, setScreen] = useState<Screen>("landing");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [scoutReady, setScoutReady] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [session, setSession] = useState<SessionData | null>(null);
+  const [result, setResult] = useState<ParsedResult | null>(null);
+
+  // Poll conversation status while on hair check screen
+  useEffect(() => {
+    if (screen !== "haircheck" || !session || scoutReady) return;
+
+    const fallback = setTimeout(() => setScoutReady(true), 12000);
+
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/conversation-status?id=${session.conversationId}`);
+        const { status } = await res.json();
+        if (status === "active") {
+          setScoutReady(true);
+        }
+      } catch {
+        // ignore, fallback handles it
+      }
+    }, 1500);
+
+    return () => {
+      clearTimeout(fallback);
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [screen, session, scoutReady]);
+
+  useEffect(() => {
+    if (scoutReady && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, [scoutReady]);
+
+  const handleStart = async () => {
+    setLoading(true);
+    setError(undefined);
+    try {
+      const res = await fetch("/api/conversation", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+
+      setSession({
+        conversationId: data.conversation_id,
+        conversationUrl: data.conversation_url,
+        calendarEvents: parseCalendarEvents(data.context ?? ""),
+        context: data.context ?? "",
+      });
+      setScoutReady(false);
+      setScreen("haircheck");
+    } catch (err) {
+      console.error("Failed to start session:", err);
+      setError("Couldn't start your briefing. Try again in a moment.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleJoin = () => {
+    setScreen("active");
+  };
+
+  const handleLeave = useCallback(async (conversationId: string, transcript: Utterance[]) => {
+    setScreen("parsing");
+
+    const context = session?.context ?? "";
+
+    const [, parseRes] = await Promise.allSettled([
+      fetch("/api/end-conversation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId }),
+      }),
+      fetch("/api/parse-standup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId, transcript, context }),
+      }),
+    ]);
+
+    if (parseRes.status === "fulfilled" && parseRes.value.ok) {
+      const data = await parseRes.value.json();
+      setResult(data);
+      setScreen("end");
+    } else {
+      // Parse failed — show end screen with calendar-derived fallback so the
+      // user isn't silently dropped back to landing with no explanation
+      setResult(deriveFromContext(session?.context ?? ""));
+      setScreen("end");
+    }
+  }, [session]);
+
+  const handleRestart = () => {
+    setSession(null);
+    setResult(null);
+    setScreen("landing");
+  };
+
+  if (screen === "landing") {
+    return <LandingScreen onStart={handleStart} loading={loading} error={error} />;
+  }
+
+  if (screen === "haircheck" && session) {
+    return <HairCheckScreen onJoin={handleJoin} scoutReady={scoutReady} />;
+  }
+
+  if (screen === "active" && session) {
+    return (
+      <ActiveSession
+        conversationUrl={session.conversationUrl}
+        conversationId={session.conversationId}
+        calendarEvents={session.calendarEvents}
+        onLeave={handleLeave}
+      />
+    );
+  }
+
+  if (screen === "parsing") {
+    return (
+      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
+        <div className="text-center space-y-3">
+          <div className="w-1.5 h-1.5 bg-white/30 rounded-full animate-pulse mx-auto" />
+          <p className="text-white/30 text-sm">Building your brief...</p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
-  );
+      </div>
+    );
+  }
+
+  if (screen === "end" && result) {
+    return (
+      <EndScreen
+        brief={result.brief}
+        standup={result.standup}
+        calendarEvents={session?.calendarEvents ?? []}
+        onRestart={handleRestart}
+      />
+    );
+  }
+
+  return null;
 }
